@@ -123,3 +123,10 @@ Distributed under the **MIT License**. See `LICENSE` for details.
 ## ⚠️ Disclaimer
 
 This is a research experiment. Compression ratio depends heavily on luck (finding matching seeds within the search radius), parameters, and block size. It is **not** intended for critical data storage.
+
+## 👤 Author
+
+**[Pásthi Dániel]**
+- 💻 GitHub: [@felhasználóneved](https://github.com/BraienStorm)
+
+---
