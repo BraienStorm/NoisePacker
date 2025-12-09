@@ -70,6 +70,11 @@ class NoisePacker:
         # Use a local Random instance to avoid polluting global state
         rng = random.Random()
 
+        best_candidate = 0
+        best_offset = 0
+        best_ratio = 0.5
+        found_any = False
+
         for d in range(SEARCH_RADIUS):
             # Check +d and -d
             offsets = [d] if d == 0 else [d, -d]
@@ -88,25 +93,24 @@ class NoisePacker:
                 # Count ones (differences)
                 diffs = xor_val.bit_count()
                 
-                # Symmetry: if diffs > half, we can invert the mask (conceptually)
-                # In NoisePacker, if we find a mask that is the exact inverse,
-                # we can signal that with 1 bit or just assume the decoder tries both/knows?
-                # The original code did: if z < half, z = half - z (Wait, original code was: if z < size/2, z = size - z)
-                # Original code counted ZEROS.
-                # My diffs is ONES.
-                # Zeros = Total - Ones.
+                # Symmetry logic
                 zeros = chunk_len_bits - diffs
-                
-                # If zeros < half, it means ones > half.
-                # In the original code: "Invert if ones are majority".
-                # Meaning if we have a lot of ones (bad match), we invert mask to get a lot of zeros (good match).
-                # So effective zeros = max(zeros, chunk_len_bits - zeros)
                 effective_zeros = max(zeros, diffs)
                 
                 ratio = effective_zeros / chunk_len_bits
-                
-                # If ratio is good enough AND worth the delta cost
-                if ratio >= TARGET_RATIO:
-                    return True, candidate, offset, ratio
+
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_candidate = candidate
+                    best_offset = offset
+                    found_any = True
+
+                    # Optimization: If we find a "perfect" or near-perfect match, stop early.
+                    # 0.99 is effectively perfect for this purpose.
+                    if best_ratio > 0.99:
+                        return True, best_candidate, best_offset, best_ratio
+
+        if found_any and best_ratio >= TARGET_RATIO:
+            return True, best_candidate, best_offset, best_ratio
                     
         return False, 0, 0, 0.5

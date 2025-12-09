@@ -5,7 +5,11 @@ def calculate_entropy_cost(ratio, size):
     """
     Calculates the theoretical size limit (Shannon entropy) for a given ratio of zeros.
     """
-    if ratio == 0.5 or ratio == 0 or ratio == 1:
+    if ratio == 0:
+        return 0
+    if ratio == 1:
+        return 0
+    if ratio == 0.5:
         return size
         
     h = -ratio * math.log2(ratio) - (1-ratio) * math.log2(1-ratio)
