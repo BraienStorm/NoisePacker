@@ -1,12 +1,12 @@
 import numpy as np
-import os
+import random
 from src.config import *
 from src.utils import *
 
 class NoisePacker:
     def __init__(self):
         print("Initializing NoisePacker Engine...")
-        self.masks = generate_masks_table()
+        # self.masks table is no longer needed for direct PRNG generation
         self.current_seed = 0
         
         # Statistics
@@ -25,16 +25,24 @@ class NoisePacker:
         """
         chunk_len_bits = BLOCKS_PER_CHUNK * BLOCK_SIZE
         
+        # Convert chunk_data (numpy bits) to a single integer for fast bitwise ops
+        # chunk_data is (BLOCKS_PER_CHUNK, BLOCK_SIZE) of 0s and 1s.
+        # We flatten it to a 1D array of bits, then pack to bytes, then to int.
+        # Note: np.packbits packs 8 bits into a byte.
+        flat_bits = chunk_data.flatten()
+        packed_bytes = np.packbits(flat_bits).tobytes()
+        chunk_int = int.from_bytes(packed_bytes, 'big')
+
         # 1. Calculate Raw Cost (Original + 1 bit Flag)
         cost_raw = chunk_len_bits + 1
         
         # 2. Hunt for a better Seed
-        found, best_seed, delta, best_ratio = self._lazy_hunter(chunk_data)
+        found, best_seed, delta, best_ratio = self._lazy_hunter(chunk_int, chunk_len_bits)
         
         if found:
             # Calculate Compressed Cost
-            # Cost = Flag(1) + Delta(VLC) + EntropyPayload
-            header_cost = 1 + calculate_delta_cost(delta)
+            # Cost = Flag(1) + Delta(VLC) + Polarity(1) + EntropyPayload
+            header_cost = 1 + calculate_delta_cost(delta) + 1
             payload_cost = calculate_entropy_cost(best_ratio, chunk_len_bits)
             
             cost_compressed = header_cost + payload_cost
@@ -51,10 +59,17 @@ class NoisePacker:
         self.stats["chunks_raw"] += 1
         return False, cost_raw, 0
 
-    def _lazy_hunter(self, chunk_data):
+    def _lazy_hunter(self, chunk_int, chunk_len_bits):
         """
         Searches for a seed in the vicinity of the current_seed.
+        Using direct PRNG masking (random.seed -> random.randbytes).
         """
+        # Calculate how many bytes we need
+        n_bytes = (chunk_len_bits + 7) // 8
+
+        # Use a local Random instance to avoid polluting global state
+        rng = random.Random()
+
         for d in range(SEARCH_RADIUS):
             # Check +d and -d
             offsets = [d] if d == 0 else [d, -d]
@@ -62,28 +77,36 @@ class NoisePacker:
             for offset in offsets:
                 candidate = abs(self.current_seed + offset)
                 
-                # Generate masks from candidate seed
-                rng = np.random.RandomState(candidate)
-                gen_mask_ids = rng.randint(0, 256, size=BLOCKS_PER_CHUNK)
+                # Generate mask from candidate seed
+                rng.seed(candidate)
+                mask_bytes = rng.randbytes(n_bytes)
+                mask_int = int.from_bytes(mask_bytes, 'big')
+
+                # XOR and count zeros
+                xor_val = chunk_int ^ mask_int
+
+                # Count ones (differences)
+                diffs = xor_val.bit_count()
                 
-                total_zeros = 0
+                # Symmetry: if diffs > half, we can invert the mask (conceptually)
+                # In NoisePacker, if we find a mask that is the exact inverse,
+                # we can signal that with 1 bit or just assume the decoder tries both/knows?
+                # The original code did: if z < half, z = half - z (Wait, original code was: if z < size/2, z = size - z)
+                # Original code counted ZEROS.
+                # My diffs is ONES.
+                # Zeros = Total - Ones.
+                zeros = chunk_len_bits - diffs
                 
-                # Check match for all blocks in this chunk
-                for b in range(BLOCKS_PER_CHUNK):
-                    mask = self.masks[gen_mask_ids[b]]
-                    # XOR and count zeros
-                    z = np.sum(np.bitwise_xor(chunk_data[b], mask) == 0)
-                    # Invert if ones are majority (symmetry)
-                    if z < BLOCK_SIZE / 2: 
-                        z = BLOCK_SIZE - z
-                    total_zeros += z
+                # If zeros < half, it means ones > half.
+                # In the original code: "Invert if ones are majority".
+                # Meaning if we have a lot of ones (bad match), we invert mask to get a lot of zeros (good match).
+                # So effective zeros = max(zeros, chunk_len_bits - zeros)
+                effective_zeros = max(zeros, diffs)
                 
-                ratio = total_zeros / (BLOCKS_PER_CHUNK * BLOCK_SIZE)
+                ratio = effective_zeros / chunk_len_bits
                 
                 # If ratio is good enough AND worth the delta cost
                 if ratio >= TARGET_RATIO:
-                    # Quick check: Does the gain cover the delta cost?
-                    # (Approximate check to save time)
                     return True, candidate, offset, ratio
                     
         return False, 0, 0, 0.5
