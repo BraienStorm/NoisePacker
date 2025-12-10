@@ -9,8 +9,8 @@ class NoisePacker:
         print("Initializing NoisePacker Engine...")
         self.current_seed = 0
         
-        # Instantiate PRNGs
-        self.prng_instances = [cls() for cls in PRNG_REGISTRY]
+        # PRNG_REGISTRY now contains instances of Xorshift32 with different offsets
+        self.prng_instances = PRNG_REGISTRY
 
         # Statistics
         self.stats = {
@@ -72,8 +72,10 @@ class NoisePacker:
         found_any = False
 
         # Iterate over all registered PRNGs
+        # Note: Dimensional shifting is now handled inside the PRNG class seed() method.
+        # We just search [Base-R, Base+R] for each dimension.
+
         for prng_id, rng in enumerate(self.prng_instances):
-            
             for d in range(SEARCH_RADIUS):
                 offsets = [d] if d == 0 else [d, -d]
                 

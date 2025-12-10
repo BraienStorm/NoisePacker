@@ -17,10 +17,18 @@ class NoisePackerFile:
         Structure:
         [MAGIC:4]
         [ORIGINAL_SIZE:8]
-        [CHUNK_SIZE_BITS:4] (Usually 1536)
+        [CHUNK_SIZE_BITS:4]
         [ZLIB_PAYLOAD: Variable]
             Sequence of:
-            [METADATA (Fixed 5 bytes per chunk)] + [TRANSFORMED_RESIDUAL]
+            [METADATA] + [TRANSFORMED_RESIDUAL]
+
+            Metadata Logic:
+            - Byte 0 (Flags):
+              - Bit 7 (0x80): JUMP_FLAG (1=Switch Dim, 0=Stay)
+              - Bit 6 (0x40): POLARITY (1=Invert, 0=Normal)
+              - If JUMP_FLAG=1: Bits 0-1 (0x03) = NEW_ID
+              - If JUMP_FLAG=0: Bits 0-5 Unused.
+            - Bytes 1-4: SEED_DELTA (Signed 32-bit)
         """
         with open(input_path, 'rb') as f:
             data = f.read()
@@ -39,16 +47,11 @@ class NoisePackerFile:
 
         n_chunks = len(padded_data) // chunk_len_bytes
 
-        # We will concatenate Metadata + Residuals into a single stream and compress it with zlib
-        # Metadata format per chunk:
-        # [PRNG_ID(2 bits) | POLARITY(1 bit) | UNUSED(5 bits)] -> 1 byte
-        # [SEED_DELTA(Signed Int)] -> 4 bytes (Fixed size for PoC simplicity)
-        # Total: 5 bytes metadata + chunk_len_bytes residual
-
         stream_buffer = bytearray()
 
         self.packer.current_seed = 0
         last_seed = 0
+        last_prng_id = 0 # Default starting dimension is 0
 
         for i in range(n_chunks):
             chunk_bytes = padded_data[i*chunk_len_bytes : (i+1)*chunk_len_bytes]
@@ -58,25 +61,26 @@ class NoisePackerFile:
             seed, prng_id, residual_int, ratio, polarity = self.packer.scan_for_best_transformation(chunk_int, chunk_len_bits)
 
             # Metadata Construction
-            # Byte 1: Flags
-            flags = (prng_id & 0x03) | ((polarity & 0x01) << 2)
+            flags = 0
+
+            # Polarity Flag (Bit 6)
+            if polarity == 1:
+                flags |= 0x40
+
+            # Jump Flag logic
+            if prng_id != last_prng_id:
+                flags |= 0x80 # Set JUMP_FLAG
+                flags |= (prng_id & 0x03) # Store new ID in low bits
+                last_prng_id = prng_id
+            else:
+                # JUMP_FLAG is 0. ID bits ignored.
+                pass
+
             stream_buffer.append(flags)
 
-            # Bytes 2-5: Seed Delta (Signed 32-bit big endian)
-            # Delta is from last_seed (which updates to current_seed)
-            # packer.current_seed is updated by scan_for_best_transformation to 'seed'
-            # But the 'seed' returned is absolute.
-            # Delta = seed - last_seed.
-            # Wait, `scan_for_best_transformation` searches relative to `self.current_seed`.
-            # And it updates `self.current_seed` at the end.
-            # So `seed` is the absolute new seed.
-            # `last_seed` should be what `self.current_seed` WAS before update.
-            # Actually, `scan_for_best_transformation` updates `self.current_seed`.
-            # So `last_seed` is the previous seed.
-
+            # Seed Delta
             delta = seed - last_seed
             stream_buffer.extend(delta.to_bytes(4, 'big', signed=True))
-
             last_seed = seed
 
             # Residual
@@ -107,24 +111,32 @@ class NoisePackerFile:
         decompressed_stream = zlib.decompress(compressed_data)
 
         chunk_len_bytes = (chunk_len_bits + 7) // 8
-        # Metadata is 5 bytes per chunk
         frame_size = 5 + chunk_len_bytes
 
         n_chunks = len(decompressed_stream) // frame_size
 
         output_buffer = bytearray()
         current_seed = 0
+        current_prng_id = 0
 
         # Instantiate PRNGs
         from src.prngs import PRNG_REGISTRY
-        prngs = [cls() for cls in PRNG_REGISTRY]
+        import copy
+        prngs = copy.deepcopy(PRNG_REGISTRY)
 
         ptr = 0
         for i in range(n_chunks):
             # Parse Metadata
             flags = decompressed_stream[ptr]
-            prng_id = flags & 0x03
-            polarity = (flags >> 2) & 0x01
+
+            jump_flag = (flags >> 7) & 0x01
+            polarity = (flags >> 6) & 0x01
+
+            if jump_flag == 1:
+                current_prng_id = flags & 0x03
+            else:
+                # Keep existing current_prng_id
+                pass
 
             delta_bytes = decompressed_stream[ptr+1 : ptr+5]
             delta = int.from_bytes(delta_bytes, 'big', signed=True)
@@ -140,31 +152,15 @@ class NoisePackerFile:
             current_seed = seed
 
             # Reconstruct Mask
-            rng = prngs[prng_id]
-            rng.seed(abs(seed)) # Seed must be positive for RNG, but delta logic handles abs?
-            # In packer: `candidate = abs(self.current_seed + offset)`.
-            # So logic handles abs.
-            # But here `seed` can be negative if we just add delta?
-            # Wait, `seed` tracks `current_seed`. `current_seed` in packer is always `best_candidate` which is abs().
-            # Delta is `best_candidate - old_candidate`.
-            # So `seed` should be positive.
+            rng = prngs[current_prng_id]
+            rng.seed(abs(seed))
 
             mask_bytes = rng.randbytes(chunk_len_bytes)
             mask_int = int.from_bytes(mask_bytes, 'big')
 
             # Restore Data
-            # R = D ^ M (or ~D ^ M if polarity?)
-            # Wait, packer logic:
-            # Normal: xor_val = chunk ^ mask. Best_xor = xor_val. Polarity=0.
-            # Inverted: xor_val = chunk ^ mask. Best_xor = xor_val ^ Ones. Polarity=1.
-
-            # Restore:
-            # If Polarity=0: D = R ^ M
-            # If Polarity=1: R = (D^M)^Ones. => R^Ones = D^M => D = R^Ones^M.
-
             if polarity == 1:
                  all_ones = (1 << chunk_len_bits) - 1
-                 # Invert residual first
                  residual_restore = residual_int ^ all_ones
                  data_int = residual_restore ^ mask_int
             else:
