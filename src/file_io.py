@@ -79,7 +79,7 @@ class NoisePackerFile:
             stream_buffer.append(flags)
 
             # Seed Delta
-            delta = seed - last_seed
+            delta = int(seed - last_seed)
             stream_buffer.extend(delta.to_bytes(4, 'big', signed=True))
             last_seed = seed
 
