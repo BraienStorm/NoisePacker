@@ -9,8 +9,8 @@ BLOCKS_PER_CHUNK = 3
 
 # The "Lazy Hunter" radius. How far do we search for a seed?
 # Larger radius = better compression but slower speed.
-# Adjusted to 2048 to balance the load of multiple PRNG algorithms and slower Python implementation.
-SEARCH_RADIUS = 2048
+# Increased to 16384 per user request to maximize compression potential.
+SEARCH_RADIUS = 16384
 
 # Target Ratio to consider "Good enough" (e.g. 0.525 = 52.5% zeros)
 TARGET_RATIO = 0.525
