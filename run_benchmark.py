@@ -26,7 +26,7 @@ def main():
     
     packer = NoisePacker()
     
-    print(f"{'#ID':<5} | {'STATUS':<10} | {'DELTA':<8} | {'NET GAIN'}")
+    print(f"{'#ID':<5} | {'STATUS':<8} | {'RATIO':<8} | {'NET GAIN'}")
     print("-" * 60)
     
     start_time = time.time()
