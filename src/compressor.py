@@ -72,13 +72,23 @@ class NoisePacker:
         found_any = False
 
         # Iterate over all registered PRNGs
+        # STRATEGY: Stagger the search ranges so they don't overlap.
+        # MT (0): [Base-R, Base+R]
+        # LCG (1): [Base+R, Base+3R] (Shifted by 2*R)
+        # XOR (2): [Base+3R, Base+5R] (Shifted by 4*R)
+        # This effectively triples the search space coverage.
+
         for prng_id, rng in enumerate(self.prng_instances):
+            shift = prng_id * (SEARCH_RADIUS * 2)
             
             for d in range(SEARCH_RADIUS):
                 offsets = [d] if d == 0 else [d, -d]
                 
                 for offset in offsets:
-                    candidate = abs(self.current_seed + offset)
+                    # Apply shift based on PRNG ID
+                    # If offset is negative, it goes left of shift. Positive goes right.
+                    # Base + Shift + Offset
+                    candidate = abs(self.current_seed + shift + offset)
 
                     rng.seed(candidate)
                     mask_bytes = rng.randbytes(n_bytes)
@@ -122,10 +132,12 @@ class NoisePacker:
         best_polarity = 0 # 0: Normal, 1: Inverted
 
         for prng_id, rng_inst in enumerate(self.prng_instances):
+            shift = prng_id * (SEARCH_RADIUS * 2)
+
             for d in range(SEARCH_RADIUS):
                 offsets = [d] if d == 0 else [d, -d]
                 for offset in offsets:
-                    candidate = abs(self.current_seed + offset)
+                    candidate = abs(self.current_seed + shift + offset)
                     rng_inst.seed(candidate)
                     mask_bytes = rng_inst.randbytes(n_bytes)
                     mask_int = int.from_bytes(mask_bytes, 'big')
