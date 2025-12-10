@@ -105,5 +105,56 @@ class NoisePacker:
 
         if found_any and best_ratio >= TARGET_RATIO:
             return True, best_candidate, best_offset, best_ratio, best_prng_id
-                    
+
         return False, 0, 0, 0.5, 0
+
+    def scan_for_best_transformation(self, chunk_int, chunk_len_bits):
+        """
+        Scans all PRNGs and seeds within SEARCH_RADIUS to find the absolute best
+        XOR mask that maximizes the number of zeros (entropy breaking).
+        Returns: best_seed, best_prng_id, best_xor_val, best_ratio, best_polarity
+        """
+        n_bytes = (chunk_len_bits + 7) // 8
+        best_candidate = 0
+        best_ratio = -1.0
+        best_prng_id = 0
+        best_xor_val = 0
+        best_polarity = 0 # 0: Normal, 1: Inverted
+
+        for prng_id, rng_inst in enumerate(self.prng_instances):
+            for d in range(SEARCH_RADIUS):
+                offsets = [d] if d == 0 else [d, -d]
+                for offset in offsets:
+                    candidate = abs(self.current_seed + offset)
+                    rng_inst.seed(candidate)
+                    mask_bytes = rng_inst.randbytes(n_bytes)
+                    mask_int = int.from_bytes(mask_bytes, 'big')
+
+                    xor_val = chunk_int ^ mask_int
+                    diffs = xor_val.bit_count()
+
+                    # Logic for polarity
+                    zeros = chunk_len_bits - diffs
+
+                    # Check Normal
+                    if (zeros / chunk_len_bits) > best_ratio:
+                        best_ratio = zeros / chunk_len_bits
+                        best_candidate = candidate
+                        best_prng_id = prng_id
+                        best_xor_val = xor_val
+                        best_polarity = 0
+
+                    # Check Inverted (Polarity)
+                    if (diffs / chunk_len_bits) > best_ratio:
+                         best_ratio = diffs / chunk_len_bits
+                         best_candidate = candidate
+                         best_prng_id = prng_id
+                         # Inverted residual
+                         all_ones = (1 << chunk_len_bits) - 1
+                         best_xor_val = xor_val ^ all_ones
+                         best_polarity = 1
+
+        # Update current seed for next hunt
+        self.current_seed = best_candidate
+
+        return best_candidate, best_prng_id, best_xor_val, best_ratio, best_polarity
